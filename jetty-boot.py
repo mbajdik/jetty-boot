@@ -15,9 +15,9 @@ SCREEN_HEIGHT = 640
 TICK_RATE = 60  # Clock follows this, frame rate is fixed
 V_HORIZONTAL = 2
 V_HORIZONTAL_RESPAWN_MULTIPLIER = 4
-A_VERTICAL = 0.4  # pixels/tick^2
-V_VERTICAL_JUMP = 3.5
-V_VERTICAL_MAX = 10
+A_VERTICAL = 0.35  # Not linear - more aggressive curve in Boot update() function
+V_VERTICAL_JUMP = 3.4
+V_VERTICAL_MAX = 1000  # Basically removed the limit
 V_VERTICAL_FLYAWAY_SLOW = V_HORIZONTAL-0.5
 V_VERTICAL_FLYAWAY_NORMAL = V_HORIZONTAL+0.5
 V_VERTICAL_FLYAWAY_FAST = V_HORIZONTAL+1.5
@@ -41,6 +41,7 @@ class GameUtilities:
     @staticmethod
     def effect_crt(screen: pygame.Surface):
         GameUtilities.effect_crt_blur(screen)
+        GameUtilities.effect_crt_agressive_blur(screen)
         GameUtilities.effect_crt_backlight_bleed(screen)
         GameUtilities.effect_crt_scanlines(screen)
         GameUtilities.effect_crt_flicker(screen)
@@ -51,6 +52,13 @@ class GameUtilities:
         glow_surf = pygame.transform.smoothscale(screen, (SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2))
         glow_surf = pygame.transform.smoothscale(glow_surf, (SCREEN_WIDTH, SCREEN_HEIGHT))
         glow_surf.set_alpha(127)
+        screen.blit(glow_surf, (0, 0))
+
+    @staticmethod
+    def effect_crt_agressive_blur(screen: pygame.Surface):
+        glow_surf = pygame.transform.smoothscale(screen, (SCREEN_WIDTH // 4, SCREEN_HEIGHT // 4))
+        glow_surf = pygame.transform.smoothscale(glow_surf, (SCREEN_WIDTH, SCREEN_HEIGHT))
+        glow_surf.set_alpha(63)
         screen.blit(glow_surf, (0, 0))
 
     @staticmethod
@@ -132,6 +140,7 @@ class Boot(pygame.sprite.Sprite):
         self.x = self.default_x
         self.y = self.default_y
         self.v_vertical = 0
+        self.freefall_ticks = 0
         # self.climb_cooldown = 5
 
         # Textures
@@ -148,7 +157,7 @@ class Boot(pygame.sprite.Sprite):
         if phase in [GamePhase.NORMAL]:
             #self.climb_cooldown = max(self.climb_cooldown - 1, 0)
             self.y += self.v_vertical * ticks
-            self.v_vertical = min(self.v_vertical + ticks * A_VERTICAL, 3)
+            self.v_vertical = min(self.v_vertical + ticks * A_VERTICAL * (1 + self.freefall_ticks), 3)
 
         if phase in [GamePhase.RESPAWN]:
             self.x = max(self.x - V_HORIZONTAL*ticks, self.default_x)
@@ -163,14 +172,25 @@ class Boot(pygame.sprite.Sprite):
             )
             self.y = max(self.y - v_vertical*ticks, 160)
 
+        if self.v_vertical > 0:
+            self.freefall_ticks += ticks
+
     def climb_event(self, phase: int = 0):
         self.v_vertical = -V_VERTICAL_JUMP
+        self.freefall_ticks = 0
 
     def get_image(self, phase: int = 0):
-        if self.v_vertical >= 0 and phase not in [GamePhase.FLYAWAY]:
+        if phase in [GamePhase.INIT, GamePhase.RESPAWN]:
             return self._image_base
-        else:
+
+        if phase in [GamePhase.FLYAWAY]:
             return self._image_climb
+
+        if phase in [GamePhase.NORMAL, GamePhase.GAME_OVER]:
+            if self.v_vertical >= 0:
+                return self._image_base
+            else:
+                return self._image_climb
 
     @property
     def image(self):
@@ -203,21 +223,18 @@ class Pillars(pygame.sprite.Sprite):
         self.image.convert()
         self.image.fill((0, 0, 0, 0))
         opening_size = random.randint(Pillars.OPENING_SIZE_RANGE[0], Pillars.OPENING_SIZE_RANGE[1])
-        opening_center = 160 + random.randint(-int(opening_size * 3 / 4), int(opening_size * 3 / 4))
+        opening_top = random.randint(Pillars.CAP_HEIGHT, 320-Pillars.CAP_HEIGHT-opening_size)
+        opening_bottom = opening_top+opening_size
 
-        bottom_top = opening_center + opening_size / 2
-        bottom_full_height = 320 - bottom_top
-        bottom_top_cap = GameUtilities.colored_rectangle(Pillars.WIDTH, Pillars.CAP_HEIGHT, Pillars.CAP_COLOR)
-        bottom_base = GameUtilities.colored_rectangle(Pillars.WIDTH, bottom_full_height - Pillars.CAP_HEIGHT, Pillars.BASE_COLOR)
-        self.image.blit(bottom_top_cap, (0, bottom_top))
-        self.image.blit(bottom_base, (0, bottom_top + Pillars.CAP_HEIGHT))
+        top_pillar_base = GameUtilities.colored_rectangle(Pillars.WIDTH, opening_top - Pillars.CAP_HEIGHT, Pillars.BASE_COLOR)
+        top_pillar_cap = GameUtilities.colored_rectangle(Pillars.WIDTH, Pillars.CAP_HEIGHT, Pillars.CAP_COLOR)
+        self.image.blit(top_pillar_base, (0, 0))
+        self.image.blit(top_pillar_cap, (0, opening_top - Pillars.CAP_HEIGHT))
 
-        top_bottom = opening_center - opening_size / 2
-        top_full_height = top_bottom
-        top_base = GameUtilities.colored_rectangle(Pillars.WIDTH, top_full_height - Pillars.CAP_HEIGHT, Pillars.BASE_COLOR)
-        top_bottom_cap = GameUtilities.colored_rectangle(Pillars.WIDTH, Pillars.CAP_HEIGHT, Pillars.CAP_COLOR)
-        self.image.blit(top_base, (0, 0))
-        self.image.blit(top_bottom_cap, (0, top_bottom - Pillars.CAP_HEIGHT))
+        bottom_pillar_base = GameUtilities.colored_rectangle(Pillars.WIDTH, 320 - opening_bottom - Pillars.CAP_HEIGHT, Pillars.BASE_COLOR)
+        bottom_pillar_cap = GameUtilities.colored_rectangle(Pillars.WIDTH, Pillars.CAP_HEIGHT, Pillars.CAP_COLOR)
+        self.image.blit(bottom_pillar_base, (0, opening_bottom + Pillars.CAP_HEIGHT))
+        self.image.blit(bottom_pillar_cap, (0, opening_bottom))
 
         # Collision mask
         self.mask = pygame.mask.from_surface(self.image)
@@ -377,9 +394,10 @@ class JettyBootGame:
                 self.running = False
                 return
             elif e.type == KEYUP and e.key in [K_RETURN, K_KP_ENTER]:
-                self.game_player_name = self.init_name_text
-                self.game_save_data()
-                self.mode_change(JettyBootGame.Mode.MAIN_MENU)
+                if len(self.init_name_text) > 0:
+                    self.game_player_name = self.init_name_text
+                    self.game_save_data()
+                    self.mode_change(JettyBootGame.Mode.MAIN_MENU)
             elif e.type == KEYUP and e.key in [K_BACKSPACE]:
                 self.init_name_text = self.init_name_text[:-1]
             elif e.type == KEYUP and len(self.init_name_text) < MAX_NAME_LENGTH:
@@ -399,7 +417,7 @@ class JettyBootGame:
             if e.type == QUIT or (e.type == KEYUP and e.key == K_ESCAPE):
                 self.running = False
                 return
-            elif e.type == KEYUP and e.key in [K_UP, K_RETURN, K_SPACE, K_e]:
+            elif e.type == KEYUP and e.key in [K_UP, K_RETURN, K_SPACE, K_e, K_KP_ENTER]:
                 self.mode_change(JettyBootGame.Mode.GAME)
 
         GameUtilities.draw_text(self.screen, GameUtilities.FONT_LARGE_BOLD_ITALIC, "JETTY BOOT", 48, color=FG_LIGHT)
@@ -426,14 +444,14 @@ class JettyBootGame:
                 return
             elif e.type == KEYUP and e.key in [K_PAUSE, K_p]:
                 self.game_paused = not self.game_paused
-            elif e.type == KEYUP and e.key in [K_UP, K_RETURN, K_SPACE, K_e]:
+            elif e.type == KEYUP and e.key in [K_UP, K_RETURN, K_SPACE, K_e, K_KP_ENTER]:
                 if self.game_phase in [GamePhase.NORMAL]:
                     self.game_boot.climb_event(self.game_phase)
                 elif self.game_phase in [GamePhase.GAME_OVER]:
                     self.mode_change(JettyBootGame.Mode.MAIN_MENU)
 
         pressed = pygame.key.get_pressed()
-        if pressed[K_SPACE] or pressed[K_UP] or pressed[K_RETURN] or pressed[K_e]:
+        if pressed[K_SPACE] or pressed[K_UP] or pressed[K_RETURN] or pressed[K_e] or pressed[K_KP_ENTER]:
             self.game_boot.climb_event(self.game_phase)
 
         # Game elements - only update and check if not paused
