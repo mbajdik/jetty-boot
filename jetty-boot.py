@@ -1,6 +1,7 @@
 """
 Inspiration: https://github.com/TimoWilken/flappy-bird-pygame
 """
+import json
 import os
 import random
 
@@ -15,8 +16,8 @@ SCREEN_HEIGHT = 640
 TICK_RATE = 60  # Clock follows this, frame rate is fixed
 V_HORIZONTAL = 2
 V_HORIZONTAL_RESPAWN_MULTIPLIER = 4
-A_VERTICAL = 0.35  # Not linear - more aggressive curve in Boot update() function
-V_VERTICAL_JUMP = 3.4
+A_VERTICAL = 0.25  # Linear acceleration
+V_VERTICAL_JUMP = 3
 V_VERTICAL_MAX = 1000  # Basically removed the limit
 V_VERTICAL_FLYAWAY_SLOW = V_HORIZONTAL-0.5
 V_VERTICAL_FLYAWAY_NORMAL = V_HORIZONTAL+0.5
@@ -38,14 +39,32 @@ class GameUtilities:
     FONT_LARGE_BOLD: pygame.font.Font | None = None
     FONT_LARGE_BOLD_ITALIC: pygame.font.Font | None = None
 
+    EFFECT_SETTINGS_NAMES = {
+        0: "Blur",
+        1: "High-spread blur",
+        2: "Backlight bleed",
+        3: "Scan-lines",
+        4: "Flicker",
+        5: "Static"
+    }
+
     @staticmethod
-    def effect_crt(screen: pygame.Surface):
-        GameUtilities.effect_crt_blur(screen)
-        GameUtilities.effect_crt_agressive_blur(screen)
-        GameUtilities.effect_crt_backlight_bleed(screen)
-        GameUtilities.effect_crt_scanlines(screen)
-        GameUtilities.effect_crt_flicker(screen)
-        GameUtilities.effect_crt_static(screen)
+    def effect_crt(screen: pygame.Surface, config: dict[int, bool]):
+        try:
+            if config[0]:
+                GameUtilities.effect_crt_blur(screen)
+            if config[1]:
+                GameUtilities.effect_crt_aggressive_blur(screen)
+            if config[2]:
+                GameUtilities.effect_crt_backlight_bleed(screen)
+            if config[3]:
+                GameUtilities.effect_crt_scanlines(screen)
+            if config[4]:
+                GameUtilities.effect_crt_flicker(screen)
+            if config[5]:
+                GameUtilities.effect_crt_static(screen)
+        except KeyError:
+            pass
 
     @staticmethod
     def effect_crt_blur(screen: pygame.Surface):
@@ -55,7 +74,7 @@ class GameUtilities:
         screen.blit(glow_surf, (0, 0))
 
     @staticmethod
-    def effect_crt_agressive_blur(screen: pygame.Surface):
+    def effect_crt_aggressive_blur(screen: pygame.Surface):
         glow_surf = pygame.transform.smoothscale(screen, (SCREEN_WIDTH // 4, SCREEN_HEIGHT // 4))
         glow_surf = pygame.transform.smoothscale(glow_surf, (SCREEN_WIDTH, SCREEN_HEIGHT))
         glow_surf.set_alpha(63)
@@ -157,7 +176,7 @@ class Boot(pygame.sprite.Sprite):
         if phase in [GamePhase.NORMAL]:
             #self.climb_cooldown = max(self.climb_cooldown - 1, 0)
             self.y += self.v_vertical * ticks
-            self.v_vertical = min(self.v_vertical + ticks * A_VERTICAL * (1 + self.freefall_ticks), 3)
+            self.v_vertical = min(self.v_vertical + ticks * A_VERTICAL, V_VERTICAL_MAX)
 
         if phase in [GamePhase.RESPAWN]:
             self.x = max(self.x - V_HORIZONTAL*ticks, self.default_x)
@@ -176,6 +195,9 @@ class Boot(pygame.sprite.Sprite):
             self.freefall_ticks += ticks
 
     def climb_event(self, phase: int = 0):
+        if phase not in [GamePhase.NORMAL]:
+            return
+
         self.v_vertical = -V_VERTICAL_JUMP
         self.freefall_ticks = 0
 
@@ -204,7 +226,7 @@ class Boot(pygame.sprite.Sprite):
 class Pillars(pygame.sprite.Sprite):
     WIDTH = 24
     SPACING = 120
-    OPENING_SIZE_RANGE = [80, 120]
+    OPENING_SIZE_RANGE = (80, 120)
     CAP_HEIGHT = 16
 
     BASE_COLOR = FG_DEFAULT
@@ -284,6 +306,9 @@ class JettyBootGame:
 
         self.init_name_text = ""
         self.init_ticks = 0
+        self.init_selection = 0
+        self.init_settings = {k: True for k in range(len(GameUtilities.EFFECT_SETTINGS_NAMES))}
+        self.init_settings_selected = 0
 
         self.menu_ticks_in_menu = 0
 
@@ -310,6 +335,18 @@ class JettyBootGame:
                     print("Couldn't load high score")
                 self.init_name_text = jb_str.split("\n")[0]
 
+                init_settings_temp = {}
+                try:
+                    init_settings_temp = json.loads(jb_str.split("\n")[2])  # keys are strings (json)
+                except IndexError:
+                    print("Couldn't load display settings, falling back to defaults")
+                self.init_settings = {
+                    k: init_settings_temp[str(k)]
+                    if str(k) in init_settings_temp and isinstance(init_settings_temp[str(k)], bool)
+                    else True
+                    for k in range(len(GameUtilities.EFFECT_SETTINGS_NAMES))
+                }
+
     def mode_change(self, mode: int):
         self.mode = mode
         if mode in [JettyBootGame.Mode.GAME]:
@@ -324,7 +361,7 @@ class JettyBootGame:
             self.game_generate_game_objects()
 
     def game_level_pillar_count(self):
-        return 1 + self.game_level
+        return 5 + self.game_level*2
 
     def game_generate_game_objects(self):
         pillars_temp = []
@@ -361,7 +398,7 @@ class JettyBootGame:
 
     def game_save_data(self):
         with open("jb.txt", "w", encoding="UTF-8") as w:
-            w.write(f"{self.game_player_name}\n{str(self.game_high_score)}")
+            w.write(f"{self.game_player_name}\n{str(self.game_high_score)}\n{json.dumps(self.init_settings)}")
 
     def mainloop(self):
         while self.running:
@@ -382,7 +419,7 @@ class JettyBootGame:
                 case JettyBootGame.Mode.GAME:
                     self.tick_game(events)
 
-            GameUtilities.effect_crt(self.screen)
+            GameUtilities.effect_crt(self.screen, self.init_settings)
 
             pygame.display.flip()
 
@@ -393,22 +430,60 @@ class JettyBootGame:
             if e.type == QUIT or (e.type == KEYUP and e.key == K_ESCAPE):
                 self.running = False
                 return
-            elif e.type == KEYUP and e.key in [K_RETURN, K_KP_ENTER]:
-                if len(self.init_name_text) > 0:
-                    self.game_player_name = self.init_name_text
-                    self.game_save_data()
-                    self.mode_change(JettyBootGame.Mode.MAIN_MENU)
-            elif e.type == KEYUP and e.key in [K_BACKSPACE]:
-                self.init_name_text = self.init_name_text[:-1]
-            elif e.type == KEYUP and len(self.init_name_text) < MAX_NAME_LENGTH:
-                self.init_name_text += e.unicode
+            elif e.type == KEYUP:
+                if e.key in [K_TAB]:
+                    direction = -1 if pygame.key.get_pressed()[K_LSHIFT] or pygame.key.get_pressed()[K_RSHIFT] else 1
+                    new_selection = self.init_selection + direction
 
-        name_cursored_text = self.init_name_text + (("_" if self.init_ticks // 30 % 2 == 0 else " ") if len(self.init_name_text) < MAX_NAME_LENGTH else "")
+                    if new_selection < 0:
+                        self.init_selection = 2
+                    elif new_selection > 2:
+                        self.init_selection = 0
+                    else:
+                        self.init_selection = new_selection
+                elif self.init_selection in [0]:
+                    if e.key in [K_RETURN, K_KP_ENTER] and len(self.init_name_text) > 0:
+                        self.game_player_name = self.init_name_text
+                        self.game_save_data()
+                        self.mode_change(JettyBootGame.Mode.MAIN_MENU)
+                    elif e.key in [K_BACKSPACE]:
+                        self.init_name_text = self.init_name_text[:-1]
+                    elif len(self.init_name_text) < MAX_NAME_LENGTH:
+                        self.init_name_text += e.unicode
+                elif self.init_selection in [1]:
+                    if e.key in [K_RETURN, K_KP_ENTER, K_SPACE]:
+                        self.init_settings[self.init_settings_selected] = not self.init_settings[self.init_settings_selected]
+                    elif e.key in [K_DOWN]:
+                        self.init_settings_selected = min(len(GameUtilities.EFFECT_SETTINGS_NAMES)-1, self.init_settings_selected+1)
+                    elif e.key in [K_UP]:
+                        self.init_settings_selected = max(0, self.init_settings_selected - 1)
+                elif self.init_selection in [2]:
+                    if e.key in [K_RETURN, K_KP_ENTER] and len(self.init_name_text) > 0:
+                        self.game_player_name = self.init_name_text
+                        self.game_save_data()
+                        self.mode_change(JettyBootGame.Mode.MAIN_MENU)
+
+        name_cursored_text = self.init_name_text + (("_" if self.init_ticks // 30 % 2 == 0 or self.init_selection not in [0] else " ") if len(self.init_name_text) < MAX_NAME_LENGTH else "")
         name_cursored_text_bracketed = f"[{name_cursored_text}{(MAX_NAME_LENGTH-len(name_cursored_text))*"_"}]"
+        name_color = FG_LIGHT if self.init_selection in [0] else FG_DEFAULT
 
         GameUtilities.draw_text(self.screen, GameUtilities.FONT_LARGE_BOLD_ITALIC, "JETTY BOOT", 48, color=FG_LIGHT)
         GameUtilities.draw_text(self.screen, GameUtilities.FONT_SMALL_NORMAL, "Choose a name:", 140)
-        GameUtilities.draw_text(self.screen, GameUtilities.FONT_SMALL_NORMAL, name_cursored_text_bracketed, 160, color=FG_LIGHT)
+        GameUtilities.draw_text(self.screen, GameUtilities.FONT_SMALL_NORMAL, name_cursored_text_bracketed, 160, color=name_color)
+
+        GameUtilities.draw_text(self.screen, GameUtilities.FONT_SMALL_NORMAL, "Display options", 240)
+        for setting_index, setting_name in GameUtilities.EFFECT_SETTINGS_NAMES.items():
+            setting_cursor = ">" if self.init_selection in [1] and setting_index == self.init_settings_selected else " "
+            setting_selection = "[*]" if self.init_settings[setting_index] else "[ ]"
+            setting_color = FG_LIGHT if self.init_selection in [1] and setting_index == self.init_settings_selected else FG_DEFAULT
+            GameUtilities.draw_text(self.screen, GameUtilities.FONT_SMALL_NORMAL, setting_cursor+setting_selection+setting_name, 260+setting_index*20, 56, color=setting_color)
+
+        start_cursors = [">", "<"] if self.init_selection in [2] else ["", ""]
+        start_color = FG_LIGHT if self.init_selection in [2] else FG_DEFAULT
+        GameUtilities.draw_text(self.screen, GameUtilities.FONT_SMALL_NORMAL, f"{start_cursors[0]}[Start]{start_cursors[1]}", 400, color=start_color)
+
+        GameUtilities.draw_text(self.screen, GameUtilities.FONT_SMALL_NORMAL, "Press [TAB] interact with", 580)
+        GameUtilities.draw_text(self.screen, GameUtilities.FONT_SMALL_NORMAL, "the different menus", 600)
 
         self.init_ticks += 1
 
@@ -423,13 +498,14 @@ class JettyBootGame:
         GameUtilities.draw_text(self.screen, GameUtilities.FONT_LARGE_BOLD_ITALIC, "JETTY BOOT", 48, color=FG_LIGHT)
         GameUtilities.draw_text(self.screen, GameUtilities.FONT_SMALL_NORMAL, "High Scores", 140)
 
-        dummy_highscores = [
+        highscores_list = [
             ("Bosco", 999999),
             ("Steve", 99999),
             ("Lloyd", 9999),
             (self.game_player_name, self.game_high_score, True)
         ]
-        for i, high_scorer in enumerate(dummy_highscores):
+        highscores_list.sort(key=lambda hs: hs[1], reverse=True)
+        for i, high_scorer in enumerate(highscores_list):
             color = FG_DEFAULT if len(high_scorer) == 2 else FG_LIGHT
             GameUtilities.draw_text(self.screen, GameUtilities.FONT_SMALL_NORMAL, f"{i + 1}.", 170 + i * 20, 32, color=color)
             GameUtilities.draw_text(self.screen, GameUtilities.FONT_SMALL_NORMAL, f"{high_scorer[0]}", 170 + i * 20, 56, color=color)
